@@ -1,8 +1,9 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
+const pdf = require('html-pdf');
+const axios = require('axios');
 
 const app = express();
 const port = 3001;
@@ -12,7 +13,7 @@ app.use(cors());
 
 const BASE_URL = 'https://app.epackers.in/view-quotation.aspx';
 
-// Add URL builder function
+// Function to build URL with query parameters
 const buildUrl = (params) => {
   const { sr, cid, dn, action } = params;
   if (!sr || !cid || !dn || !action) {
@@ -22,67 +23,41 @@ const buildUrl = (params) => {
 };
 
 app.get('/generate-pdf', async (req, res) => {
-  let browser = null;
   try {
     const { sr, cid, dn, action } = req.query;
-    
     const urlToConvert = buildUrl({ sr, cid, dn, action });
     console.log('Generated URL:', urlToConvert);
 
-    browser = await puppeteer.launch({ 
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-    const page = await browser.newPage();
-    
-    await page.setViewport({ width: 1920, height: 1080 });
-    console.log(`Navigating to ${urlToConvert}...`);
-    await page.goto(urlToConvert, { waitUntil: 'networkidle0', timeout: 60000 });
+    // Fetch the HTML content
+    const response = await axios.get(urlToConvert);
+    const htmlContent = response.data;
 
     console.log('Generating PDF...');
-    const pdfBuffer = await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      margin: {
-        top: '20px',
-        right: '20px',
-        bottom: '20px',
-        left: '20px'
-      }
-    });
-
-    if (browser) {
-      await browser.close();
-      console.log('Browser closed successfully');
-    }
-
-    const filePath = path.join(__dirname, 'output.pdf');
-    fs.writeFileSync(filePath, pdfBuffer);
-    console.log('PDF file written successfully');
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'attachment; filename=output.pdf');
-    res.sendFile(filePath, (err) => {
+    pdf.create(htmlContent, { format: 'A4' }).toFile('output.pdf', (err, result) => {
       if (err) {
-        console.error('Error sending file:', err);
+        console.error('PDF Generation Error:', err);
+        return res.status(500).json({ error: 'Error generating PDF', details: err.message });
       }
-      try {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
+
+      console.log('PDF file saved successfully');
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename=output.pdf');
+      res.sendFile(result.filename, (err) => {
+        if (err) {
+          console.error('Error sending file:', err);
         }
-      } catch (unlinkError) {
-        console.error('Error deleting file:', unlinkError);
-      }
+        try {
+          if (fs.existsSync(result.filename)) {
+            fs.unlinkSync(result.filename);
+          }
+        } catch (unlinkError) {
+          console.error('Error deleting file:', unlinkError);
+        }
+      });
     });
   } catch (error) {
-    if (browser) {
-      await browser.close();
-    }
-    console.error('PDF Generation Error:', error);
-    res.status(500).json({
-      error: 'Error generating PDF',
-      details: error.message
-    });
+    console.error('Error fetching page:', error);
+    res.status(500).json({ error: 'Error fetching page content', details: error.message });
   }
 });
 
